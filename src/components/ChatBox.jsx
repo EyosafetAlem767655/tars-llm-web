@@ -4,6 +4,7 @@ import axios from "axios";
 
 export default function ChatBox() {
   const {
+    userName,
     messages, setMessages,
     humor, setHumor,
     honesty,
@@ -13,8 +14,22 @@ export default function ChatBox() {
 
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef(null);
+  const greetedRef = useRef(false); // to avoid seeding multiple times
 
-  // 1) Instantiate the recognizer once
+  // Regexes for tone adjustment
+  const humorUpRegex = /\b(more (playful|fun|humor)|lighter|joke more|increase humor|be more playful)\b/i;
+  const humorDownRegex = /\b(more serious|less (playful|humor|jokes)|tone it down|decrease humor|be more serious)\b/i;
+  const setHumorRegex = /\b(?:set\s+humor\s+to|humor)\s*(\d{1,3})\b/i;
+
+  // 1) Seed initial introduction once
+  useEffect(() => {
+    if (userName && messages.length === 0 && !greetedRef.current) {
+      setMessages([{ role: "user", content: `My name is ${userName}. Ready to begin the mission.` }]);
+      greetedRef.current = true;
+    }
+  }, [userName, messages.length, setMessages]);
+
+  // 2) Instantiate recognizer once
   useEffect(() => {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) return;
@@ -24,10 +39,14 @@ export default function ChatBox() {
     rec.continuous = true;
     rec.interimResults = false;
 
-    // When recognition ends (e.g. after stop()), only restart if listening is still true
     rec.onend = () => {
-      if (listening) rec.start();
-      else setListening(false);
+      if (listening) {
+        try {
+          rec.start();
+        } catch {}
+      } else {
+        setListening(false);
+      }
     };
     rec.onerror = () => {
       setListening(false);
@@ -41,9 +60,9 @@ export default function ChatBox() {
       rec.stop();
       setListening(false);
     };
-  }, []); // run only on mount
+  }, []); // mount only
 
-  // 2) Handle each speech result
+  // 3) Attach result handler with latest closure
   useEffect(() => {
     const rec = recognitionRef.current;
     if (!rec) return;
@@ -56,7 +75,7 @@ export default function ChatBox() {
     return () => {
       rec.onresult = null;
     };
-  }, [messages, humor, honesty, sessionId]); // update closure
+  }, [messages, humor, honesty, sessionId, userName]);
 
   function addMessage(role, content) {
     const next = [...messages, { role, content }];
@@ -67,30 +86,51 @@ export default function ChatBox() {
   async function processCommand(text) {
     if (!text) return;
 
-    // 3) Append the user’s message
+    // Append user's message
     const updatedHistory = addMessage("user", text);
 
-    // 4) Handle local commands
+    // Stage navigation
     if (/andromeda/i.test(text)) setStage(2);
     else if (/black hole/i.test(text)) setStage(3);
-    else if (/humor/i.test(text)) setHumor(h => Math.min(h + 20, 100));
-    else if (/serious/i.test(text)) setHumor(h => Math.max(h - 20, 0));
 
+    // Tone/humor direct set (e.g., "humor 70" or "set humor to 30")
+    const setMatch = text.match(setHumorRegex);
+    if (setMatch) {
+      let target = parseInt(setMatch[1], 10);
+      if (isNaN(target)) target = humor;
+      target = Math.max(0, Math.min(100, target));
+      setHumor(target);
+      await sendToneAdjustment(updatedHistory, target);
+      return;
+    }
+
+    // Relative adjustments
+    if (humorUpRegex.test(text)) {
+      const newHumor = Math.min(humor + 20, 100);
+      setHumor(newHumor);
+      await sendToneAdjustment(updatedHistory, newHumor);
+      return;
+    } else if (humorDownRegex.test(text)) {
+      const newHumor = Math.max(humor - 20, 0);
+      setHumor(newHumor);
+      await sendToneAdjustment(updatedHistory, newHumor);
+      return;
+    }
+
+    // Regular mission query
     try {
-      // 5) Send the conversation to the API
       const { data } = await axios.post("/api/chat", {
-        messages:  updatedHistory,
+        messages: updatedHistory,
         humor,
         honesty,
         sessionId,
+        userName,
       });
 
-      // 6) Save sessionId on first reply
       if (!sessionId && data.sessionId) {
         setSessionId(data.sessionId);
       }
 
-      // 7) Append TARS’s reply
       addMessage("tars", data.reply.content);
       speak(data.reply.content);
     } catch (err) {
@@ -98,21 +138,49 @@ export default function ChatBox() {
     }
   }
 
+  // Explicit tone adjustment helper
+  async function sendToneAdjustment(history, newHumor) {
+    try {
+      const adjPrompt = `Adjust your tone to humor level ${newHumor}%. Acknowledge the change briefly using my name and continue assisting with the mission.`;
+      const payloadHistory = [
+        ...history,
+        { role: "user", content: adjPrompt },
+      ];
+
+      const { data } = await axios.post("/api/chat", {
+        messages: payloadHistory,
+        humor: newHumor,
+        honesty,
+        sessionId,
+        userName,
+      });
+
+      if (!sessionId && data.sessionId) {
+        setSessionId(data.sessionId);
+      }
+
+      addMessage("tars", data.reply.content);
+      speak(data.reply.content);
+    } catch (err) {
+      console.error("Tone adjust error:", err);
+    }
+  }
+
   function speak(text) {
     const rec = recognitionRef.current;
-    // Stop listening before TTS
     if (rec) {
       rec.stop();
       setListening(false);
     }
 
-    // Speak and resume on end
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = "en-US";
     utter.onend = () => {
       if (rec) {
-        rec.start();
-        setListening(true);
+        try {
+          rec.start();
+          setListening(true);
+        } catch {}
       }
     };
     window.speechSynthesis.speak(utter);
@@ -130,7 +198,7 @@ export default function ChatBox() {
           else rec.start();
           setListening(l => !l);
         }}
-        style={{ padding: "8px 16px", fontSize: 16 }}
+        style={{ padding: "8px 16px", fontSize: 16, marginBottom: 8 }}
       >
         {listening ? "Pause Listening" : "Resume Listening"}
       </button>
@@ -141,10 +209,11 @@ export default function ChatBox() {
         marginTop: 10,
         background: "rgba(0,0,0,0.6)",
         color: "white",
-        padding: 10
+        padding: 10,
+        fontSize: 14,
       }}>
         {messages.map((m, i) => (
-          <div key={i}>
+          <div key={i} style={{ marginBottom: 4 }}>
             <strong style={{ textTransform: "capitalize" }}>{m.role}:</strong> {m.content}
           </div>
         ))}
