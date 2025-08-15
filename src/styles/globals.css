@@ -1,14 +1,105 @@
-html, body, #__next {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  width: 100%;
-  overflow: hidden;
-  font-family: Arial, sans-serif;
-  background: black;
-  color: white;
+:root {
+  --bg:#03060d;
+  --accent:#42fff3;
+  --accent-dim:#1ea8a1;
+  --hud:#66e0ff;
+  --hud-dim:#0b3a47;
+  --glass:rgba(18,28,40,.35);
+  --glass-strong:rgba(18,28,40,.7);
+  --text:#dff9ff;
 }
 
-button {
-  cursor: pointer;
+* { box-sizing:border-box; }
+html, body, #__next { height:100%; }
+body {
+  margin:0; background:var(--bg); color:var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
+
+/* Landing starfield canvas */
+.starfield {
+  position:fixed; inset:0; z-index:-1; background: radial-gradient(1200px 600px at 70% -10%, #0b1c28 0%, transparent 70%);
+}
+
+/* Neon glow helpers */
+.glow { filter: drop-shadow(0 0 8px var(--accent)); }
+.hud-glow { filter: drop-shadow(0 0 12px var(--hud)); }
+
+/* Landing layout */
+.landing-wrap {
+  min-height:100vh; display:flex; align-items:center; justify-content:center;
+  padding:40px; position:relative; overflow:hidden;
+}
+.landing-card {
+  width:min(720px, 92vw);
+  background:linear-gradient(180deg, var(--glass), rgba(5,10,18,.5));
+  border:1px solid rgba(66,255,243,.2);
+  border-radius:18px; padding:28px 28px 22px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 40px rgba(0,0,0,.5), 0 0 120px rgba(66,255,243,.08) inset;
+}
+.landing-title {
+  display:flex; align-items:center; gap:12px; margin-bottom:6px;
+  letter-spacing:.08em; font-weight:700; font-size:15px; color:var(--accent);
+  text-transform:uppercase;
+}
+.landing-h1 {
+  font-size: clamp(28px, 3.8vw, 46px);
+  margin: 6px 0 12px;
+}
+.landing-sub { opacity:.78; margin:0 0 18px; line-height:1.4; }
+
+/* Input row */
+.call-row {
+  display:flex; gap:10px; margin-top:8px;
+}
+.call-input {
+  flex:1; height:48px; border-radius:12px; border:1px solid rgba(66,255,243,.2);
+  background: rgba(2,8,16,.6); color:var(--text); padding:0 14px; font-size:16px;
+  outline:none;
+}
+.call-input::placeholder { color:#7fbcc6; }
+.call-btn {
+  height:48px; padding:0 18px; border-radius:12px; background:linear-gradient(90deg, #1fcac2, #3df2e8);
+  color:#002b2b; font-weight:700; border:none; cursor:pointer;
+  box-shadow: 0 0 24px rgba(61,242,232,.35);
+}
+.footer-mini { opacity:.6; font-size:12px; margin-top:12px; }
+
+/* Cockpit frame */
+.cockpit {
+  position:fixed; inset:0; overflow:hidden;
+}
+.cockpit-window {
+  position:absolute; inset:40px; border-radius:24px;
+  background: radial-gradient(1200px 800px at 50% -10%, rgba(15,40,64,.6) 0%, rgba(15,40,64,.2) 45%, transparent 70%);
+  border:1px solid rgba(102,224,255,.18);
+  box-shadow: 0 8px 80px rgba(0,0,0,.6) inset, 0 0 120px rgba(66,255,243,.08) inset;
+  overflow:hidden;
+}
+.cockpit-chrome {
+  position:absolute; inset:16px;
+  pointer-events:none; display:grid; grid-template-columns: 1fr auto;
+}
+.hud {
+  position:absolute; left:24px; top:24px; right:24px; display:flex; gap:16px; align-items:center; justify-content:space-between;
+}
+.hud-pill {
+  background:linear-gradient(180deg, var(--glass-strong), rgba(2,12,20,.5));
+  border:1px solid rgba(102,224,255,.2); border-radius:999px; padding:8px 14px; font-size:12px;
+}
+.hud-right { display:flex; gap:8px; }
+.hud-meter {
+  background:linear-gradient(90deg, var(--hud-dim), rgba(0,0,0,.2));
+  height:6px; width:140px; border-radius:999px; overflow:hidden; border:1px solid rgba(102,224,255,.25);
+}
+.hud-meter>span { display:block; height:100%; background:linear-gradient(90deg, #3de6ff, #16b3ff); }
+
+/* Text overlay when exiting spacetime */
+.blackout {
+  position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+  background: radial-gradient(900px 500px at 50% 30%, rgba(0,0,0,.85), #000);
+  color:#d8efff; font-size: clamp(22px, 3.5vw, 54px); letter-spacing:.02em;
+  opacity:0; animation:fadeIn 2.5s forwards ease-in;
+}
+@keyframes fadeIn { to { opacity:1; } }
