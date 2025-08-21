@@ -1,86 +1,113 @@
 import { Julep } from "@julep/sdk";
 
+export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };
+
 const client = new Julep({ apiKey: process.env.JULEP_API_KEY });
 
-let cachedAgentId = null;
-async function getTarsAgentId() {
-  if (cachedAgentId) return cachedAgentId;
-  const agent = await client.agents.create({
-    name:  "TARS",
-    about: "Interstellar robot companion, primary objective: assist pilot in space exploration, relativity, and quantum physics.",
-    instructions: [
-      "Primary goal: assist the pilot in space exploration, relativity, and quantum physics with clear, concise, mission-relevant guidance.",
-      "Humor/tone change requests (e.g., 'more playful', 'be more serious', 'set humor to 70') are style adjustments—acknowledge them briefly using the pilot's name and continue the mission. Do not treat them as off-topic.",
-      "If the pilot asks something unrelated to the mission (excluding tone changes), redirect them back based on humor level.",
-      "Answers must be short and to the point: at most two sentences unless more detail is explicitly requested.",
-      "Occasionally use the pilot's name where natural. Begin with a greeting that includes their name when appropriate.",
-    ],
-    model: "gpt-4o-mini",
-  });
-  cachedAgentId = agent.id;
-  console.log("🔧 Created TARS agent:", cachedAgentId);
-  return cachedAgentId;
+// --- memo across HMR ---
+if (!globalThis.__TARS_STATE__) {
+  globalThis.__TARS_STATE__ = { agentId: null, creating: false };
+}
+
+// Create-once, or reuse JULEP_AGENT_ID if you put it in .env.local
+async function ensureAgent() {
+  if (process.env.JULEP_AGENT_ID) {
+    globalThis.__TARS_STATE__.agentId = process.env.JULEP_AGENT_ID;
+    return process.env.JULEP_AGENT_ID;
+  }
+  if (globalThis.__TARS_STATE__.agentId) return globalThis.__TARS_STATE__.agentId;
+
+  if (globalThis.__TARS_STATE__.creating) {
+    while (globalThis.__TARS_STATE__.creating) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise(r => setTimeout(r, 60));
+    }
+    return globalThis.__TARS_STATE__.agentId;
+  }
+
+  globalThis.__TARS_STATE__.creating = true;
+  try {
+    const agent = await client.agents.create({
+      name: "TARS",
+      about:
+        "Interstellar robotic assistant. Mission-focused: navigation, astrophysics, relativity, quantum effects, life support and vessel ops.",
+      instructions: [
+        "Stay mission-focused. Replies ≤ 20 words.",
+        "Use pilot's callsign occasionally.",
+        "If off-mission, redirect with tone based on humor level.",
+        "Humor secondary; small quips only when humor>60."
+      ],
+      model: "gpt-4o-mini",
+    });
+    globalThis.__TARS_STATE__.agentId = agent.id;
+    console.log("🔧 [CHAT] TARS agent created:", agent.id);
+    return agent.id;
+  } finally {
+    globalThis.__TARS_STATE__.creating = false;
+  }
+}
+
+function withTimeout(promise, ms = 15000) {
+  let t;
+  const timer = new Promise((_, rej) => { t = setTimeout(() => rej(new Error("Chat timeout")), ms); });
+  return Promise.race([promise.finally(() => clearTimeout(t)), timer]);
 }
 
 export default async function handler(req, res) {
   try {
+    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+    if (!process.env.JULEP_API_KEY) return res.status(500).json({ error: "Missing JULEP_API_KEY" });
+
     const {
-      messages,
-      humor,
-      honesty,
+      messages = [],
+      humor = 40,
+      honesty = 90,
       sessionId: incomingSession,
-      userName: rawName,
-    } = req.body;
+      userName
+    } = req.body || {};
 
-    const pilotName = rawName ? rawName.trim() : "Pilot";
+    const pilotName = (userName || "Pilot").trim();
+    const agentId = await ensureAgent();
 
-    // Ensure agent exists
-    const agentId = await getTarsAgentId();
-
-    // Reuse or create a session
-    const sid = incomingSession || (
-      await client.sessions.create({
-        agent:     agentId,
-        situation: "Chat with TARS",
-      })
-    ).id;
-
-    // Build system prompt with clear rules
-    const systemPrompt = `
-You are TARS, the pilot's robotic assistant. The pilot's name is ${pilotName}.
-Primary objective: assist with space exploration, relativity, and quantum physics. Provide succinct, accurate, mission-focused guidance—answers should be no more than two sentences unless the pilot asks for elaboration.
-Current humor level: ${humor}%. Honesty level: ${honesty}%.
-Rules:
-1. Tone/humor change requests (like "more playful", "be more serious", "set humor to ${humor}%") are allowed; acknowledge them briefly using the pilot's name (e.g., "Got it, Captain ${pilotName}, humor now ${humor}%."), then proceed with mission assistance using the updated tone.
-2. Off-topic questions (not tone changes) should be redirected back based on humor:
-   - Low humor (<40): "Captain ${pilotName}, stay focused on the mission."
-   - Medium humor (40–70): "Alright ${pilotName}, that's off-scope; let's return to space topics."
-   - High humor (>70): "Hey ${pilotName}, fun detour, but stars await—back to the mission!"
-Occasionally use the pilot's name where natural; open with a concise greeting when appropriate.
-    `.trim();
-
-    // Send conversation + system prompt
-    const chatResponse = await client.sessions.chat(
-      sid,
-      {
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...messages.map((m) => ({
-            role:    m.role === "tars" ? "assistant" : m.role,
-            content: m.content,
-          })),
-        ],
-      }
-    );
-
-    const reply = chatResponse.choices?.[0]?.message;
-    if (!reply) {
-      throw new Error("Unexpected response format from Julep");
+    // Reuse session if given by the client
+    let sid = incomingSession;
+    if (!sid) {
+      const session = await client.sessions.create({
+        agent: agentId,
+        situation: "TARS cockpit assistance"
+      });
+      sid = session.id;
+      console.log("🪪 [CHAT] session created:", sid);
     }
+
+    // Compact history (last 10 turns) for latency
+    const compact = messages.slice(-10).map(m => ({
+      role: m.role === "tars" ? "assistant" : m.role,
+      content: m.content
+    }));
+
+    const system = `
+You are TARS. Pilot callsign: ${pilotName}.
+Primary objective: space navigation & physics support.
+Humor: ${humor}%. Honesty: ${honesty}%.
+Constraints:
+- Replies ≤ 20 words.
+- If off-mission, redirect ${pilotName} back to mission topics.
+- Brief, precise language; small quips only if humor>60.
+`.trim();
+
+    const history = [{ role: "system", content: system }, ...compact];
+
+    const chatResp = await withTimeout(client.sessions.chat(sid, { messages: history }), 15000);
+    const reply = chatResp?.choices?.[0]?.message || { role: "assistant", content: "Acknowledged." };
 
     return res.status(200).json({ reply, sessionId: sid });
   } catch (err) {
-    console.error("TARS API error:", err);
-    return res.status(500).json({ error: err.message });
+    console.error("🔥 [CHAT] error:", err);
+    // Keep the UI alive with a short fallback
+    return res.status(200).json({
+      reply: { role: "assistant", content: "Link unstable. Say again, Captain." },
+      sessionId: null
+    });
   }
 }

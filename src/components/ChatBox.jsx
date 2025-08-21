@@ -1,9 +1,41 @@
-import { useContext, useState, useEffect, useRef } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { ChatContext } from "@/context/ChatContext";
 import axios from "axios";
 
-const COOLDOWN_AFTER_TTS_MS = 1100;
-const BUTTON_DEBOUNCE_MS = 300;
+/** Pick a British male voice if available; otherwise any English male; never French. */
+function chooseBritishMale(voices) {
+  if (!voices?.length) return null;
+
+  // 1) Strict British (en-GB) + male-ish names first
+  const ukMale = voices.find(v =>
+    /en-GB/i.test(v.lang) &&
+    /(UK English Male|Daniel|George|Ryan|Brian|Oliver|Male)/i.test(v.name)
+  );
+  if (ukMale) return ukMale;
+
+  // 2) Any “UK English” in name
+  const ukName = voices.find(v => /(UK English)/i.test(v.name));
+  if (ukName) return ukName;
+
+  // 3) Any English voice with male-ish name (avoid fr/*)
+  const enMale = voices.find(v =>
+    /en-/i.test(v.lang) &&
+    !/fr|french/i.test(v.lang + " " + v.name) &&
+    /(Male|David|Mark|Daniel|Oliver|George|Ryan|Alex|Fred)/i.test(v.name)
+  );
+  if (enMale) return enMale;
+
+  // 4) Any en-GB at all
+  const anyUK = voices.find(v => /en-GB/i.test(v.lang));
+  if (anyUK) return anyUK;
+
+  // 5) Any English
+  const anyEN = voices.find(v => /en-/i.test(v.lang));
+  if (anyEN) return anyEN;
+
+  // 6) Fallback: first voice (last resort)
+  return voices[0];
+}
 
 export default function ChatBox() {
   const {
@@ -12,211 +44,27 @@ export default function ChatBox() {
     humor, setHumor,
     honesty,
     sessionId, setSessionId,
-    setStage
+    setStage,
   } = useContext(ChatContext);
 
-  /** ---------------- STT / Recognizer ---------------- */
-  const recognitionRef    = useRef(null);
-  const [listening, setListening] = useState(false);
-  const shouldListenRef   = useRef(true);
-  const startPendingRef   = useRef(false);
-  const stopPendingRef    = useRef(false);
+  const [showInit, setShowInit] = useState(true);
 
-  /** ---------------- TTS / Voice ---------------- */
-  const [voices, setVoices] = useState([]);
-  const voicesReadyRef = useRef(false);
-  const lockedVoiceNameRef = useRef(
-    (typeof window !== "undefined" && localStorage.getItem("tarsLockedVoice")) || ""
-  );
+  // SR/voice refs
+  const recognitionRef = useRef(null);
+  const listeningRef = useRef(false);
   const speakingRef = useRef(false);
   const ignoreUntilRef = useRef(0);
-  const lastAssistantRef = useRef(""); // normalized last assistant sentence
-  const lastHeardRef = useRef("");     // last transcript fed to LLM
+  const lastHeardRef = useRef("");
 
-  /** ---------------- Button debounce ---------------- */
-  const [btnBusy, setBtnBusy] = useState(false);
+  // voice setup
+  const voiceReadyRef = useRef(false);
+  const chosenVoiceRef = useRef(null);
 
-  /** ---------------- Helpers ---------------- */
-  const PREFERRED = [
-    "Google US English Male",
-    "Microsoft Mark",
-    "Microsoft David",
-    "Microsoft Guy",
-    "Google US English",
-    "Alex"
-  ];
-  function pickBestUSMale(vs) {
-    if (!vs?.length) return null;
-    for (const pref of PREFERRED) {
-      const v = vs.find(x => x.name.toLowerCase().includes(pref.toLowerCase()));
-      if (v) return v;
-    }
-    const enUS = vs.filter(v => /en[-_]?US/i.test(v.lang));
-    if (enUS.length) {
-      const maleHint = enUS.find(v => /male|mark|david|guy|alex/i.test(v.name));
-      return maleHint || enUS[0];
-    }
-    const en = vs.filter(v => /en/i.test(v.lang));
-    if (en.length) {
-      const maleHint = en.find(v => /male|mark|david|guy|alex/i.test(v.name));
-      return maleHint || en[0];
-    }
-    return vs[0];
-  }
-  function selectedVoice() {
-    const list = window.speechSynthesis?.getVoices?.() || voices;
-    if (!list.length) return null;
-    const locked = lockedVoiceNameRef.current && list.find(v => v.name === lockedVoiceNameRef.current);
-    return locked || pickBestUSMale(list);
-  }
-  function normalize(s) {
-    return (s || "")
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s']/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-  function isEcho(transcript) {
-    const t = normalize(transcript);
-    const a = lastAssistantRef.current;
-    if (!t || !a) return false;
-    const wc = t.split(" ").filter(Boolean).length;
-    if (wc < 3) return false;
-    if (a.includes(t)) return true;
-    const tSet = new Set(t.split(" "));
-    const aSet = new Set(a.split(" "));
-    let overlap = 0; for (const w of tSet) if (aSet.has(w)) overlap++;
-    return overlap / Math.max(1, tSet.size) >= 0.8;
-  }
+  // guards
+  const greetedRef = useRef(false);
+  const inflightRef = useRef(false);
 
-  /** ---------------- Voice warmup ---------------- */
-  useEffect(() => {
-    const load = () => {
-      try { window.speechSynthesis?.getVoices?.(); } catch {}
-      const v = window.speechSynthesis?.getVoices?.() || [];
-      if (!v.length) return;
-      setVoices(v);
-      voicesReadyRef.current = true;
-      if (!lockedVoiceNameRef.current) {
-        const pick = pickBestUSMale(v);
-        if (pick) {
-          lockedVoiceNameRef.current = pick.name;
-          localStorage.setItem("tarsLockedVoice", pick.name);
-        }
-      }
-    };
-    load();
-    window.speechSynthesis.onvoiceschanged = load;
-    const r1 = setTimeout(load, 250);
-    const r2 = setTimeout(load, 800);
-    return () => { window.speechSynthesis.onvoiceschanged = null; clearTimeout(r1); clearTimeout(r2); };
-  }, []);
-
-  /** ---------------- Safe start/stop wrappers ---------------- */
-  const safeStart = () => {
-    const rec = recognitionRef.current;
-    if (!rec) return;
-    if (startPendingRef.current || listening) return;
-    if (!shouldListenRef.current) return;
-    startPendingRef.current = true;
-    stopPendingRef.current = false;
-    // small delay helps avoid 'already started' races
-    setTimeout(() => {
-      try { rec.start(); } catch {}
-    }, 120);
-  };
-  const safeStop = () => {
-    const rec = recognitionRef.current;
-    if (!rec) return;
-    if (stopPendingRef.current || !listening) return;
-    stopPendingRef.current = true;
-    startPendingRef.current = false;
-    try { rec.stop(); } catch {}
-  };
-
-  /** ---------------- Recognizer init ---------------- */
-  useEffect(() => {
-    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRec) return;
-    if (recognitionRef.current) return;
-
-    const rec = new SpeechRec();
-    rec.lang = "en-US";
-    rec.continuous = true;
-    rec.interimResults = false;
-
-    rec.onstart = () => {
-      startPendingRef.current = false;
-      setListening(true);
-    };
-    rec.onend = () => {
-      setListening(false);
-      stopPendingRef.current = false;
-      // If we *should* be listening, restart safely
-      if (shouldListenRef.current && !speakingRef.current) {
-        safeStart();
-      }
-    };
-    rec.onerror = () => {
-      setListening(false);
-      stopPendingRef.current = false;
-      // Try to recover after brief delay
-      if (shouldListenRef.current && !speakingRef.current) {
-        setTimeout(() => safeStart(), 400);
-      }
-    };
-    rec.onresult = (e) => {
-      const result = e.results[e.results.length - 1];
-      const transcript = (result && result[0] && result[0].transcript || "").trim();
-      if (!transcript) return;
-      if (speakingRef.current) return;
-      if (Date.now() < ignoreUntilRef.current) return;
-      if (isEcho(transcript)) return;
-      if (transcript === lastHeardRef.current) return;
-
-      lastHeardRef.current = transcript;
-      processCommand(transcript);
-    };
-
-    recognitionRef.current = rec;
-    shouldListenRef.current = true;
-    safeStart();
-
-    return () => {
-      shouldListenRef.current = false;
-      safeStop();
-      recognitionRef.current = null;
-    };
-  }, []); // mount once
-
-  /** ---------------- Initial seed / intro ---------------- */
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (!userName || seededRef.current) return;
-    seededRef.current = true;
-
-    const introUser = `My name is ${userName}. Ready to begin the mission.`;
-    setMessages([{ role: "user", content: introUser }]);
-
-    (async () => {
-      try {
-        const { data } = await axios.post("/api/chat", {
-          messages: [{ role: "user", content: introUser }],
-          humor, honesty, sessionId, userName,
-        });
-        if (!sessionId && data.sessionId) setSessionId(data.sessionId);
-        const replyText = (data.reply?.content || "").trim();
-        setMessages(prev => [...prev, { role: "tars", content: replyText }]);
-        lastAssistantRef.current = normalize(replyText);
-        speak(replyText); // pauses STT, cooldown, then safeStart()
-      } catch (err) {
-        console.error("Initial chat error:", err);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userName]);
-
-  /** ---------------- Commands / Tone ---------------- */
+  // ---------- helpers ----------
   const humorUpRegex   = /\b(more (playful|fun|humor)|lighter|joke more|increase humor|be more playful)\b/i;
   const humorDownRegex = /\b(more serious|less (playful|humor|jokes)|tone it down|decrease humor|be more serious)\b/i;
   const setHumorRegex  = /\b(?:set\s*humor\s*to|humor)\s*(\d{1,3})\b/i;
@@ -231,144 +79,281 @@ export default function ChatBox() {
   function addMessage(role, content) {
     const next = [...messages, { role, content }];
     setMessages(next);
+    try { sessionStorage.setItem("tars_messages", JSON.stringify(next)); } catch {}
     return next;
   }
 
-  async function processCommand(text) {
-    if (!text) return;
+  // ---------- restore session + history on mount ----------
+  useEffect(() => {
+    try {
+      const savedSid = sessionStorage.getItem("tars_sessionId");
+      if (savedSid && !sessionId) setSessionId(savedSid);
 
-    const updatedHistory = addMessage("user", text);
+      const savedMsgs = sessionStorage.getItem("tars_messages");
+      if (savedMsgs && messages.length === 0) {
+        const parsed = JSON.parse(savedMsgs);
+        if (Array.isArray(parsed)) setMessages(parsed);
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (sessionId) {
+      try { sessionStorage.setItem("tars_sessionId", sessionId); } catch {}
+    }
+  }, [sessionId]);
+
+  // ---------- voice: load & pre-warm BEFORE first speak ----------
+  async function loadVoices() {
+    const waitVoices = () => new Promise((resolve) => {
+      const v0 = window.speechSynthesis.getVoices?.() || [];
+      if (v0.length) return resolve(v0);
+      const handler = () => {
+        const v = window.speechSynthesis.getVoices?.() || [];
+        if (v.length) {
+          window.speechSynthesis.onvoiceschanged = null;
+          resolve(v);
+        }
+      };
+      window.speechSynthesis.onvoiceschanged = handler;
+      setTimeout(() => resolve(window.speechSynthesis.getVoices?.() || []), 2500);
+    });
+
+    const voices = await waitVoices();
+    // filter out French entirely
+    const filtered = voices.filter(v => !/fr|french/i.test((v.lang || "") + " " + (v.name || "")));
+    const pick = chooseBritishMale(filtered.length ? filtered : voices);
+    chosenVoiceRef.current = pick || null;
+
+    // Pre-warm: mute 1-char utterance *with that voice*, then cancel queue
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    u.lang = pick && /en-GB/i.test(pick.lang) ? "en-GB" : "en-US";
+    if (pick) u.voice = pick;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+
+    voiceReadyRef.current = true;
+  }
+
+  async function speak(text) {
+    if (!voiceReadyRef.current) {
+      await loadVoices();
+    }
+
+    window.speechSynthesis.cancel();
+    stopSR(); // SR fully off during TTS
+    speakingRef.current = true;
+
+    const v = chosenVoiceRef.current;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = v && /en-GB/i.test(v.lang) ? "en-GB" : "en-US";
+    u.rate = 0.98;
+    u.pitch = 0.82;
+    u.volume = 1;
+    if (v) u.voice = v;
+
+    u.onend = () => {
+      speakingRef.current = false;
+      ignoreUntilRef.current = Date.now() + 650;
+      startSR(); // resume SR after voice ends
+    };
+
+    window.speechSynthesis.speak(u);
+  }
+
+  // ---------- SR lifecycle: single-utterance mode ----------
+  function startSR() {
+    if (speakingRef.current || listeningRef.current) return;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.continuous = false;
+    rec.interimResults = false;
+
+    rec.onstart = () => { listeningRef.current = true; };
+    rec.onerror = () => {
+      listeningRef.current = false;
+      setTimeout(() => { if (!speakingRef.current) startSR(); }, 400);
+    };
+    rec.onend = () => {
+      listeningRef.current = false;
+      setTimeout(() => { if (!speakingRef.current) startSR(); }, 350);
+    };
+    rec.onresult = (e) => {
+      const text = (e.results?.[0]?.[0]?.transcript || "").trim();
+      if (!text) return;
+      if (Date.now() < ignoreUntilRef.current) return;
+      if (text === lastHeardRef.current) return;
+      lastHeardRef.current = text;
+      processCommand(text);
+    };
+
+    recognitionRef.current = rec;
+    try { rec.start(); } catch {}
+  }
+
+  function stopSR() {
+    const rec = recognitionRef.current;
+    if (!rec) return;
+    try { rec.stop(); } catch {}
+    listeningRef.current = false;
+  }
+
+  // ---------- chat flow ----------
+  async function sendToTars(history, humorValue) {
+    if (inflightRef.current) return;
+    inflightRef.current = true;
+    try {
+      // Always send whatever sid we have (from state OR sessionStorage)
+      const sid =
+        sessionId ||
+        (() => { try { return sessionStorage.getItem("tars_sessionId"); } catch { return null; } })() ||
+        null;
+
+      const { data } = await axios.post("/api/chat", {
+        messages: history,
+        humor: humorValue,
+        honesty,
+        sessionId: sid,
+        userName,
+      });
+
+      // Persist sid immediately
+      if (data.sessionId) {
+        setSessionId(data.sessionId);
+        try { sessionStorage.setItem("tars_sessionId", data.sessionId); } catch {}
+      }
+
+      const replyText = (data.reply?.content || "").trim();
+      addMessage("tars", replyText);
+      await speak(replyText);
+    } catch (err) {
+      console.error("Chat error:", err);
+      const fallback = "Link unstable. Say again, Captain.";
+      addMessage("tars", fallback);
+      await speak(fallback);
+    } finally {
+      inflightRef.current = false;
+    }
+  }
+
+  async function sendToneAdjustment(history, newHumor) {
+    const adj = `Adjust humor to ${newHumor}%. Acknowledge briefly with my callsign; continue the mission in ≤ 20 words.`;
+    await sendToTars([...history, { role: "user", content: adj }], newHumor);
+  }
+
+  async function processCommand(text) {
+    const updated = addMessage("user", text);
 
     if (wantsWormhole(text)) setStage(2);
     else if (wantsBlackhole(text)) setStage(3);
 
+    // humor controls
     const setMatch = text.match(setHumorRegex);
     if (setMatch) {
       let target = parseInt(setMatch[1], 10);
       if (!Number.isFinite(target)) target = humor;
       target = Math.max(0, Math.min(100, target));
       setHumor(target);
-      await sendToneAdjustment(updatedHistory, target);
+      await sendToneAdjustment(updated, target);
       return;
     }
-    if (humorUpRegex.test(text)) {
-      const h = Math.min(humor + 20, 100);
-      setHumor(h);
-      await sendToneAdjustment(updatedHistory, h);
+    if (humorUpRegex.test(text))  { const h = Math.min(humor + 20, 100); setHumor(h); await sendToneAdjustment(updated, h); return; }
+    if (humorDownRegex.test(text)){ const h = Math.max(humor - 20, 0);   setHumor(h); await sendToneAdjustment(updated, h); return; }
+
+    await sendToTars(updated, humor);
+  }
+
+  // ---------- Initialize (user click; allows audio & mic) ----------
+  async function initComms() {
+    setShowInit(false);
+
+    // Load & lock voice first so the first line uses it.
+    await loadVoices();
+
+    // Seed once only if no history exists
+    const seeded = sessionStorage.getItem("tars_seeded") === "1";
+    if (!seeded && messages.length === 0 && !greetedRef.current) {
+      const name = (userName || "Pilot").trim();
+      const seededMsgs = addMessage("user", `My call sign is ${name}. Begin mission support.`);
+      greetedRef.current = true;
+      try { sessionStorage.setItem("tars_seeded", "1"); } catch {}
+      await sendToTars(seededMsgs, humor);
       return;
     }
-    if (humorDownRegex.test(text)) {
-      const h = Math.max(humor - 20, 0);
-      setHumor(h);
-      await sendToneAdjustment(updatedHistory, h);
-      return;
-    }
 
-    await sendToTars(updatedHistory, humor);
+    // If already chatting, just confirm systems and start SR
+    await speak(`Systems online, Captain ${(userName || "Pilot").trim()}.`);
   }
 
-  async function sendToneAdjustment(history, newHumor) {
-    const adjPrompt = `Adjust your tone to humor level ${newHumor}%. Acknowledge briefly using my name and continue the mission in ≤ 25 words.`;
-    await sendToTars([...history, { role: "user", content: adjPrompt }], newHumor);
-  }
-
-  async function sendToTars(history, humorValue) {
-    try {
-      const { data } = await axios.post("/api/chat", {
-        messages: history,
-        humor: humorValue,
-        honesty,
-        sessionId,
-        userName,
-      });
-      if (!sessionId && data.sessionId) setSessionId(data.sessionId);
-
-      const replyText = (data.reply?.content || "").trim();
-      addMessage("tars", replyText);
-      lastAssistantRef.current = normalize(replyText);
-      speak(replyText);
-    } catch (err) {
-      console.error("Chat error:", err);
-    }
-  }
-
-  /** ---------------- Speak: pause STT → talk → cooldown → safeStart ---------------- */
-  function speak(text) {
-    const synthOK = typeof window !== "undefined" && "speechSynthesis" in window;
-    if (!synthOK) return;
-
-    try { window.speechSynthesis.cancel(); } catch {}
-
-    const rec = recognitionRef.current;
-    shouldListenRef.current = false;     // prevent onend auto-restart while we’re speaking
-    safeStop();                          // stop recognizer cleanly
-
-    const v = selectedVoice();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US";
-    u.rate = 0.92;
-    u.pitch = 0.78;
-    if (v) u.voice = v;
-
-    speakingRef.current = true;
-
-    const resume = () => {
-      speakingRef.current = false;
-      ignoreUntilRef.current = Date.now() + COOLDOWN_AFTER_TTS_MS;
-      shouldListenRef.current = true;
-      safeStart(); // restart listening once, through the guarded path
+  // ---------- Cleanup ----------
+  useEffect(() => {
+    return () => {
+      stopSR();
+      window.speechSynthesis.cancel();
     };
+  }, []);
 
-    const watchdog = setTimeout(resume, 9000); // safety in case onend never fires
-    u.onend = () => { clearTimeout(watchdog); resume(); };
-    u.onerror = () => { clearTimeout(watchdog); resume(); };
-
-    window.speechSynthesis.speak(u);
-  }
-
-  /** ---------------- UI (last two lines like subtitles) ---------------- */
+  // display last two as subtitles
   const lastTwo = messages.slice(-2);
 
   return (
     <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-      {/* Mic toggle (debounced) */}
-      <div style={{ position: "absolute", left: 20, bottom: 20, pointerEvents: "auto" }}>
-        <button
-          disabled={btnBusy}
-          onClick={() => {
-            if (btnBusy) return;
-            setBtnBusy(true);
-            setTimeout(() => setBtnBusy(false), BUTTON_DEBOUNCE_MS);
+      {/* one-time init overlay */}
+      {showInit && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(0,0,0,0.55)", backdropFilter: "blur(3px)", pointerEvents: "auto", zIndex: 30
+        }}>
+          <div style={{
+            background: "rgba(8,15,22,0.8)", border: "1px solid rgba(90,140,180,0.4)",
+            color: "#e9f7ff", padding: "18px 22px", borderRadius: 12, textAlign: "center", width: 360
+          }}>
+            <div style={{ fontSize: 18, marginBottom: 8, letterSpacing: 0.5 }}>Initialize Comms</div>
+            <div style={{ fontSize: 13, opacity: 0.9, marginBottom: 14 }}>
+              Set voice and begin the mission.
+            </div>
+            <button
+              onClick={initComms}
+              style={{
+                pointerEvents: "auto",
+                padding: "10px 14px", fontSize: 14, borderRadius: 8,
+                background: "linear-gradient(180deg,#13324a,#0b2133)", color: "#d9f1ff",
+                border: "1px solid rgba(90,140,180,0.6)", cursor: "pointer", width: "100%"
+              }}
+            >
+              Initialize
+            </button>
+          </div>
+        </div>
+      )}
 
-            if (listening) {
-              shouldListenRef.current = false;
-              safeStop();
-            } else {
-              // If currently speaking, cancel and then start
-              if (speakingRef.current) {
-                try { window.speechSynthesis.cancel(); } catch {}
-                speakingRef.current = false;
-                ignoreUntilRef.current = Date.now() + 200;
-              }
-              shouldListenRef.current = true;
-              safeStart();
-            }
+      {/* manual SR toggle (debug) */}
+      <div style={{ position: "absolute", left: 20, bottom: 20, pointerEvents: "auto", zIndex: 15 }}>
+        <button
+          onClick={() => {
+            if (speakingRef.current) return;
+            if (listeningRef.current) { stopSR(); }
+            else { startSR(); }
           }}
           style={{
             padding: "8px 14px", fontSize: 14, borderRadius: 8,
-            background: btnBusy ? "rgba(10,20,30,0.5)" : "rgba(10,20,30,0.8)",
-            color: "#d9f1ff", border: "1px solid rgba(80,140,200,0.5)",
-            cursor: btnBusy ? "not-allowed" : "pointer"
+            background: "rgba(10,20,30,0.8)", color: "#d9f1ff",
+            border: "1px solid rgba(80,140,200,0.5)", cursor: "pointer"
           }}
         >
-          {listening ? "Pause Listening" : "Resume Listening"}
+          {listeningRef.current ? "Pause Listening" : "Resume Listening"}
         </button>
       </div>
 
-      {/* Subtitles */}
+      {/* subtitles (last two lines) */}
       <div style={{
         position: "absolute", left: "50%", transform: "translateX(-50%)",
-        bottom: 16, width: "80%", maxWidth: 900, pointerEvents: "none"
+        bottom: 16, width: "80%", maxWidth: 900, pointerEvents: "none", zIndex: 10
       }}>
         {lastTwo.map((m, i) => (
           <div
