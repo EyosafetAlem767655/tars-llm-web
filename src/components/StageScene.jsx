@@ -510,7 +510,10 @@ function SceneInner() {
       camera.updateProjectionMatrix();
     } else if (stage === 2) {
       audio1.current?.pause(); audio3.current?.pause();
-      audio2.current && (audio2.current.currentTime = 0) && audio2.current.play().catch(()=>{});
+      if (audio2.current) {
+        try { audio2.current.currentTime = 0; } catch {}
+        audio2.current.play().catch(()=>{});
+      }
       const t = setTimeout(() => {
         setSector(s => (s === 1 ? 2 : 1));
         setStage(1);
@@ -518,7 +521,10 @@ function SceneInner() {
       return () => clearTimeout(t);
     } else if (stage === 3) {
       audio1.current?.pause(); audio2.current?.pause();
-      audio3.current && (audio3.current.currentTime = 0) && audio3.current.play().catch(()=>{});
+      if (audio3.current) {
+        try { audio3.current.currentTime = 0; } catch {}
+        audio3.current.play().catch(()=>{});
+      }
       bhStartRef.current = performance.now();
       const t = setTimeout(() => {
         setShowOutText(true);
