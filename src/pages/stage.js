@@ -1,18 +1,18 @@
 import { useContext } from "react";
 import dynamic from "next/dynamic";
 import { ChatContext } from "@/context/ChatContext";
-import ChatBox from "@/components/ChatBox";
 
+// client-only components
 const StageScene = dynamic(() => import("@/components/StageScene"), { ssr: false });
+const ChatBox = dynamic(() => import("@/components/ChatBox"), { ssr: false });
 
-export default function Stage() {
+function Stage() {
   const { humor, honesty, userName } = useContext(ChatContext);
 
   return (
     <div className="cockpit">
       <div className="cockpit-window">
         <StageScene />
-
         {/* TOP HUD – stays at the top; distinct class names to avoid collisions */}
         <div
           style={{
@@ -91,3 +91,6 @@ export default function Stage() {
     </div>
   );
 }
+
+// export the page as client-only so Next.js won't prerender it (avoids server-side document/window errors)
+export default dynamic(() => Promise.resolve(Stage), { ssr: false });
