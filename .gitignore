@@ -2,3 +2,5 @@
 /.next
 /.env.local
 npm-debug.log*
+
+.vercel
