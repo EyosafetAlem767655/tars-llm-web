@@ -1,36 +1,52 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TARS — Interstellar‑inspired AI Copilot
 
-## Getting Started
+TARS is a fun, mission‑focused demo: a Next.js app that pairs an adjustable‑tone conversational AI with a realtime 3D cockpit scene (React Three Fiber). Use it as a starting point for building an interactive space‑navigation assistant with voice controls and adjustable humor/honesty.
 
-First, run the development server:
+## Features
+- Conversational agent powered by Julep SDK (configurable model)
+- Adjustable humor and honesty via voice commands (e.g. "set humor to 75")
+- 3D animated scene (stars, galaxies, wormhole, black hole) built with react-three-fiber and drei
+- TTS (text‑to‑speech) and single‑utterance speech recognition integration
+- Session persistence (stored in sessionStorage)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Tech stack
+- Next.js (API routes + React)
+- React, Hooks
+- @react-three/fiber + drei + three.js
+- Julep SDK for agent & sessions
+- Web Speech API (SR/TTS) for voice control
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Quick start (development)
+1. Install deps:
+   npm install
+2. Run dev server:
+   npm run dev
+3. Open http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment
+Create a .env.local with:
+- JULEP_API_KEY=your_julep_api_key
+- (optional) JULEP_AGENT_ID=precreated_agent_id
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The API route will create an agent on first run if JULEP_AGENT_ID is not set.
 
-## Learn More
+## Voice commands
+- Adjust humor: "set humor to 75" (0–100). >60 = playful, 30–60 = light quips, <30 = minimal humor.
+- Adjust honesty: "set honesty to 85" (0–100). Higher values make replies more direct; lower values make replies more cautious.
+- Commands are recognized by the client and forwarded to the agent as context.
 
-To learn more about Next.js, take a look at the following resources:
+## Notes & troubleshooting
+- Browsers often block audio autoplay. Interact (click/tap) to enable sound playback.
+- If stage audio doesn’t play when changing stages, ensure user gesture occurred and check console for autoplay/security errors.
+- If chat times out, check JULEP_API_KEY and network connectivity.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deploy
+Recommended: Vercel. Push repo to GitHub and import into Vercel, or:
+   npm run build
+   npm start
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Contributing
+PRs welcome. Keep changes small and focused. If adding features that change prompts/agent behavior, update tests and README.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## License & acknowledgements
+This project is a fan project/demo. Replace with your preferred license (e.g., MIT) before publishing.
