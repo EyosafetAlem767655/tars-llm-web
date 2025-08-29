@@ -197,13 +197,13 @@ function RealSatellite({ position = [12, 2.2, -38], scale = 1.1 }) {
 }
 
 /* ---------- WORMHOLE: fixed tunnel with hard bends; camera travels inside ---------- */
-function WormholeTunnel({ active, durationSec = 45 }) {
+function WormholeTunnel({ active, durationSec = 45, segments = 1200, sparkleCount = 600 }) {
   const tunnelRef = useRef();
   const ringsRef = useRef();
   const timeRef = useRef(0);
   const { camera } = useThree();
 
-  // Build a bent path (10 segments, each 45–90° turn in random axis)
+  // Build a bent path (segments is adjustable for performance)
   const { curve, points, frames, tubeGeom, ringPositions } = useMemo(() => {
     const cps = [];
     let p = new THREE.Vector3(0, 0, 0);
@@ -227,9 +227,9 @@ function WormholeTunnel({ active, durationSec = 45 }) {
       cps.push(p);
     }
     const curve = new THREE.CatmullRomCurve3(cps, false, "catmullrom", 0.25);
-    const points = curve.getSpacedPoints(1200);
-    const frames = curve.computeFrenetFrames(1200, false);
-    const tubeGeom = new THREE.TubeGeometry(curve, 1200, 5.2, 24, false);
+    const points = curve.getSpacedPoints(segments);
+    const frames = curve.computeFrenetFrames(segments, false);
+    const tubeGeom = new THREE.TubeGeometry(curve, segments, 5.2, 24, false);
 
     // ring markers every ~2% of path
     const ringPositions = [];
@@ -241,7 +241,7 @@ function WormholeTunnel({ active, durationSec = 45 }) {
       });
     }
     return { curve, points, frames, tubeGeom, ringPositions };
-  }, []);
+  }, [segments]);
 
   // Materials for tunnel and rings (slight animated offset for flow)
   const tunnelMat = useMemo(() => {
@@ -322,7 +322,7 @@ function WormholeTunnel({ active, durationSec = 45 }) {
     <group>
       <mesh ref={tunnelRef} geometry={tubeGeom} material={tunnelMat} />
       <group ref={ringsRef} />
-      <Sparkles count={600} size={2} scale={[40, 40, 140]} speed={2.0} color="#bff6ff" />
+      <Sparkles count={sparkleCount} size={2} scale={[40, 40, 140]} speed={2.0} color="#bff6ff" />
     </group>
   );
 }
@@ -582,7 +582,10 @@ function SceneInner() {
           </>
         )}
 
-        {stage === 2 && <WormholeTunnel active durationSec={45} />}
+        {stage === 2 && (
+          // lower geometry detail + fewer sparkles for performance while in wormhole
+          <WormholeTunnel active durationSec={45} segments={400} sparkleCount={200} />
+        )}
         {stage === 3 && <BlackHole active progress={bhProgress} />}
       </group>
 
@@ -622,9 +625,13 @@ function SceneInner() {
   );
 }
 
+// replace default export to allow Canvas dpr adjustment based on stage
 export default function StageScene() {
+  const { stage } = useContext(ChatContext);
+  const clientDpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+  const dpr = stage === 2 ? 1 : [1, Math.min(clientDpr, 2)];
   return (
-    <Canvas camera={{ position: [0, 0, 6], fov: 62 }} gl={{ antialias: true }}>
+    <Canvas camera={{ position: [0, 0, 6], fov: 62 }} dpr={dpr} gl={{ antialias: true }}>
       <SceneInner />
     </Canvas>
   );
