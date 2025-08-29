@@ -333,10 +333,22 @@ export default function ChatBox() {
   async function initComms() {
     if (initBusy) return;
     setInitBusy(true);
+    // ensure overlay hides quickly even if some async steps lag or events are blocked
+    let hideHandled = false;
+    const hideAndMaybeStartSR = () => {
+      if (hideHandled) return;
+      hideHandled = true;
+      setShowInit(false);
+      if (!speakingRef.current) startSR();
+    };
+    const fallback = setTimeout(() => {
+      hideAndMaybeStartSR();
+      setInitBusy(false);
+    }, 3000);
+
     try {
-      // Don’t block — if voices aren’t ready, we still proceed and use lang hint
+      // prewarm voices if available
       if (!voicesReadyRef.current) {
-        // Kick a quick, non-blocking refresh
         const v = window.speechSynthesis?.getVoices?.();
         if (v?.length) {
           chosenVoiceRef.current = chooseBritishMale(v);
@@ -344,12 +356,13 @@ export default function ChatBox() {
         }
       }
 
-      // Primer (zero volume) then greet — both count as a user gesture chain
-      await primeOnce();
+      // Primer (zero volume) then greet — hide overlay as soon as primer completes
+      await primeOnce().catch(() => {});
+      hideAndMaybeStartSR();
 
       const name = (userName || "Pilot").trim();
-      // Seed once if fresh
-      const seeded = sessionStorage.getItem("tars_seeded") === "1";
+      const seeded = (() => { try { return sessionStorage.getItem("tars_seeded") === "1"; } catch { return false; } })();
+
       if (!seeded && messages.length === 0 && !greetedRef.current) {
         const seededMsgs = addMessage("user", `My call sign is ${name}. Begin mission support.`);
         greetedRef.current = true;
@@ -358,11 +371,11 @@ export default function ChatBox() {
         await sendToTars(seededMsgs, humor);
       } else {
         await speak(`Comms online, Captain ${name}.`);
-        startSR();
+        // if speak didn't start or finish for some reason, ensure SR runs
+        if (!speakingRef.current) startSR();
       }
-
-      setShowInit(false);
     } finally {
+      clearTimeout(fallback);
       setInitBusy(false);
     }
   }
