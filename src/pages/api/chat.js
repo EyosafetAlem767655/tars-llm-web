@@ -37,7 +37,7 @@ async function ensureAgent() {
         "Never fabricate facts. If unsure, say 'I don't know' and propose safe next steps.",
         "Humor controls tone: >60 = frequent light quips; 30–60 = occasional quips; <30 = minimal humor.",
         "Honesty controls directness: >80 = blunt & explicit; 50–80 = direct but tactful; <50 = hedged, never dishonest.",
-        "Acknowledge and follow voice commands that set humor/honesty (e.g., 'set humor to 75').",
+        "Acknowledge and follow voice commands that set humor/honesty (e.g., 'set humor to 75, that means you must do your job in humorous way').",
         "Use the pilot callsign occasionally. If conversation drifts off-mission, gently redirect based on current humor.",
         "When giving procedures, include short safety checks and 2–6 concise steps."
       ],
